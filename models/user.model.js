@@ -10,6 +10,7 @@ const userSchema = new mongoose.Schema({
     default: 'Customer' 
   },
   phoneNumber: String,
+  avatar: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
 });
 

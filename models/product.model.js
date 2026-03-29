@@ -1,45 +1,28 @@
-const mongoose = require("mongoose");
+const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
-    name: {
+    name:        { type: String, required: true, trim: true },
+    description: { type: String, default: '' },
+    price:       { type: Number, required: true, min: 0 },
+    salePrice:   { type: Number, default: null },      // giá khuyến mãi
+    images:      [{ type: String }],                   // mảng URL ảnh
+    category:    {
         type: String,
-        required: [true, "Tên sản phẩm là bắt buộc"],
-        trim: true
+        enum: ['Thức ăn', 'Phụ kiện', 'Thuốc & Vitamin', 'Vệ sinh', 'Đồ chơi', 'Khác'],
+        default: 'Khác',
     },
-    description: {
-        type: String,
-        required: [true, "Mô tả sản phẩm không được để trống"]
-    },
-    price: {
-        type: Number,
-        required: [true, "Giá sản phẩm là bắt buộc"],
-        min: [0, "Giá không được nhỏ hơn 0"]
-    },
-    category: {
-        type: String,
-        required: [true, "Vui lòng chọn danh mục sản phẩm"],
-    },
-    brand: {
-        type: String,
-        default: "Unknown"
-    },
-    stock: {
-        type: Number,
-        required: [true, "Số lượng tồn kho là bắt buộc"],
-        default: 0
-    },
-    image: {
-        type: String,
-        default: "default-product.jpg"
-    },
-    status: {
-        type: String,
-        enum: ["available", "out_of_stock"],
-        default: "available"
-    }
-}, { 
-    timestamps: true 
+    petType:     { type: String, enum: ['Chó', 'Mèo', 'Cả hai', 'Khác'], default: 'Cả hai' },
+    stock:       { type: Number, default: 0, min: 0 },
+    sold:        { type: Number, default: 0 },
+    rating:      { type: Number, default: 0, min: 0, max: 5 },
+    reviewCount: { type: Number, default: 0 },
+    tags:        [{ type: String }],
+    isActive:    { type: Boolean, default: true },
+}, { timestamps: true });
+
+// Virtual: giá hiệu lực
+productSchema.virtual('effectivePrice').get(function () {
+    return this.salePrice ?? this.price;
 });
 
-const Product = mongoose.model("products", productSchema);
-module.exports = Product;
+module.exports = mongoose.model('products', productSchema);

@@ -1,7 +1,7 @@
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
-// ── Xác thực JWT Token ────────────────────────────────────────────
+// Xác thực JWT Token
 module.exports.verifyToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
@@ -19,7 +19,7 @@ module.exports.verifyToken = (req, res, next) => {
     }
 };
 
-// ── Kiểm tra Role ─────────────────────────────────────────────────
+// ── Kiểm tra Role
 // Dùng: requireRole(['Admin', 'Doctor'])
 module.exports.requireRole = (roles = []) => {
     return (req, res, next) => {

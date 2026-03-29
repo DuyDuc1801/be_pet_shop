@@ -51,7 +51,8 @@ module.exports.login = async (req, res) => {
             role: user.role,
             name: user.fullName,
             email: user.email,
-            id: user._id
+            id: user._id,
+            avatar: user.avatar
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -80,7 +81,7 @@ module.exports.updateProfile = async (req, res) => {
         const updatedUser = await User.findByIdAndUpdate(
             req.user.id,
             { fullName, phoneNumber },
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         ).select('-password');
 
         if (!updatedUser) {

@@ -1,7 +1,13 @@
+
+require('./models/user.model');
+require('./models/product.model');
+require('./models/cart.model');
+require('./models/appointment.model');
+require('./models/service.model');
+require('./models/doctor.model'); 
 const express = require('express');
 const cors = require('cors');
 const database = require("./configs/database");
-const Product = require("./models/product.model");
 require('dotenv').config();
 const rootRoutes = require('./routers/index');
 
