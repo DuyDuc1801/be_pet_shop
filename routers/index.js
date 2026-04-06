@@ -12,7 +12,10 @@ router.use('/admin/orders', require('./adminOrder.routes'));
 router.use('/services', require('./service.routes'));
 router.use('/doctors', require('./doctor.routes'));
 router.use('/admin/users', require('./adminUser.routes'));
-router.use('/ai', require('./ai.routes'));       
+router.use('/ai', require('./ai.routes')); 
+router.use('/admin/stats', require('./adminStats.routes'));     
+router.use('/reviews', require('./review.routes'));  
+router.use('/doctor', require('./doctorDashboard.routes'));
 
 router.use('/upload', require('./upload.routes'));
 
