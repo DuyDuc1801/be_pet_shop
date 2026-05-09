@@ -1,157 +1,203 @@
-const Appointment = require('../models/appointment.model');
-const Doctor = require('../models/doctor.model');
+const Appointment   = require('../models/appointment.model');
+const Doctor        = require('../models/doctor.model');
+const LeaveRequest  = require('../models/leaveRequest.model');
+const dayjs         = require('dayjs');
 
-// [Customer] Tạo lịch hẹn mới
+// ── Tất cả slot mặc định trong ngày ──────────────────────────────
+const ALL_SLOTS = [
+    '07:00','08:00','09:00','10:00','11:00',
+    '13:00','14:00','15:00','16:00','17:00','18:00',
+];
+
+// Map thứ trong tuần JS (0=Sun) → key trong workSchedule
+const DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+// ── GET /api/appointments/available-slots ─────────────────────────
+// ?doctorId=xxx&date=YYYY-MM-DD
+module.exports.getAvailableSlots = async (req, res) => {
+    try {
+        const { doctorId, date } = req.query;
+        if (!doctorId || !date)
+            return res.status(400).json({ message: 'Thiếu doctorId hoặc date.' });
+
+        // 1. Lấy thông tin bác sĩ (workSchedule)
+        const doctor = await Doctor.findById(doctorId);
+        if (!doctor)
+            return res.status(404).json({ message: 'Không tìm thấy bác sĩ.' });
+
+        // 2. Xác định thứ trong tuần
+        const dayOfWeek = dayjs(date).day();           // 0=Sun, 6=Sat
+        const dayKey    = DAY_KEYS[dayOfWeek];          // 'monday', 'tuesday'...
+
+        // 3. Lấy slots làm việc của bác sĩ trong ngày đó
+        //    - Nếu workSchedule có cấu hình cho ngày đó → dùng nó
+        //    - Nếu không có (mảng rỗng hoặc không tồn tại) → dùng ALL_SLOTS (làm full)
+        const scheduledSlots = doctor.workSchedule?.[dayKey];
+        let workingSlots = (scheduledSlots && scheduledSlots.length > 0)
+            ? scheduledSlots
+            : ALL_SLOTS;
+
+        // 4. Kiểm tra LeaveRequest đã được duyệt cho ngày này
+        const approvedLeave = await LeaveRequest.findOne({
+            doctor: doctorId,
+            date,
+            status: 'approved',
+        });
+
+        if (approvedLeave) {
+            if (approvedLeave.type === 'full_day') {
+                // Nghỉ cả ngày → không có slot nào
+                return res.status(200).json({
+                    availableSlots: [],
+                    reason: 'Bác sĩ đã được duyệt nghỉ ngày này.',
+                });
+            } else if (approvedLeave.type === 'partial') {
+                // Nghỉ một số ca → loại bỏ các slot đã nghỉ
+                const blockedSlots = new Set(approvedLeave.slots || []);
+                workingSlots = workingSlots.filter(s => !blockedSlots.has(s));
+            }
+        }
+
+        // 5. Lấy các slot đã có lịch hẹn (trạng thái chưa bị huỷ)
+        const bookedAppointments = await Appointment.find({
+            doctor: doctorId,
+            date,
+            status: { $in: ['Pending', 'Confirmed'] },
+        }).select('time');
+
+        const bookedSlots = new Set(bookedAppointments.map(a => a.time));
+
+        // 6. Loại bỏ slot đã bị đặt
+        const availableSlots = workingSlots.filter(s => !bookedSlots.has(s));
+
+        // 7. Nếu là hôm nay → loại bỏ các slot đã qua giờ hiện tại
+        const isToday = date === dayjs().format('YYYY-MM-DD');
+        let finalSlots = availableSlots;
+        if (isToday) {
+            const nowMinutes = dayjs().hour() * 60 + dayjs().minute();
+            finalSlots = availableSlots.filter(slot => {
+                const [h, m] = slot.split(':').map(Number);
+                return h * 60 + m > nowMinutes + 30; // buffer 30 phút
+            });
+        }
+
+        res.status(200).json({
+            availableSlots: finalSlots.sort(),
+            workingSlots:   workingSlots.sort(),
+            bookedSlots:    [...bookedSlots],
+            leaveInfo:      approvedLeave ? {
+                type:  approvedLeave.type,
+                slots: approvedLeave.slots || [],
+            } : null,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// ── POST /api/appointments ────────────────────────────────────────
 module.exports.create = async (req, res) => {
     try {
-        const { doctorId, serviceId, date, time, petName, petType, petAge, petWeight, note } = req.body;
+        const {
+            doctorId, serviceId, date, time,
+            petName, petType, petAge, petWeight, note,
+        } = req.body;
 
-        // Kiểm tra trùng lịch của bác sĩ
+        if (!doctorId || !serviceId || !date || !time || !petName)
+            return res.status(400).json({ message: 'Vui lòng điền đầy đủ thông tin.' });
+
+        // Kiểm tra slot còn trống không (double-check trước khi tạo)
         const conflict = await Appointment.findOne({
             doctor: doctorId,
             date,
             time,
-            status: { $in: ['Pending', 'Confirmed'] }
+            status: { $in: ['Pending', 'Confirmed'] },
         });
-        if (conflict) {
-            return res.status(400).json({ message: 'Khung giờ này đã có lịch hẹn, vui lòng chọn giờ khác.' });
+        if (conflict)
+            return res.status(409).json({ message: 'Slot giờ này vừa có người đặt. Vui lòng chọn giờ khác.' });
+
+        // Kiểm tra bác sĩ không nghỉ ca đó
+        const leave = await LeaveRequest.findOne({
+            doctor: doctorId,
+            date,
+            status: 'approved',
+        });
+        if (leave) {
+            if (leave.type === 'full_day')
+                return res.status(400).json({ message: 'Bác sĩ đã được duyệt nghỉ ngày này.' });
+            if (leave.type === 'partial' && leave.slots.includes(time))
+                return res.status(400).json({ message: `Bác sĩ đã được duyệt nghỉ ca ${time}.` });
         }
 
-        const appointment = new Appointment({
-            customer: req.user.id,
-            doctor:   doctorId,
-            service:  serviceId,
+        const appointment = await Appointment.create({
+            customer:  req.user.id,
+            doctor:    doctorId,
+            service:   serviceId,
             date, time,
-            petName, petType, petAge, petWeight, note
+            petName, petType:   petType   || 'Chó',
+            petAge:   petAge    || '',
+            petWeight:petWeight || '',
+            note:     note      || '',
+            status:   'Pending',
         });
 
-        await appointment.save();
-        res.status(201).json({ message: 'Đặt lịch thành công!', appointment });
+        const populated = await Appointment.findById(appointment._id)
+            .populate('doctor',  { path: 'user', select: 'fullName' })
+            .populate('service', 'name icon price');
+
+        res.status(201).json({ message: 'Đặt lịch thành công!', appointment: populated });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-// [Customer] Lịch hẹn của tôi 
+// ── GET /api/appointments/my ──────────────────────────────────────
 module.exports.getMyAppointments = async (req, res) => {
     try {
         const appointments = await Appointment.find({ customer: req.user.id })
-            .populate('doctor', 'specialty avatar')
-            .populate({ path: 'doctor', populate: { path: 'user', select: 'fullName' } })
-            .populate('service', 'name price duration icon')
+            .populate({ path: 'doctor',  populate: { path: 'user', select: 'fullName avatar' } })
+            .populate('service', 'name icon price duration')
             .sort({ date: -1, time: -1 });
-
-        res.status(200).json(appointments);
+        res.status(200).json({ appointments });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-//[Customer] Hủy lịch hẹn
+// ── PUT /api/appointments/:id/cancel ─────────────────────────────
 module.exports.cancel = async (req, res) => {
     try {
-        const appointment = await Appointment.findOne({
-            _id: req.params.id,
-            customer: req.user.id
+        const apt = await Appointment.findOne({
+            _id:      req.params.id,
+            customer: req.user.id,
+            status:   { $in: ['Pending', 'Confirmed'] },
         });
+        if (!apt) return res.status(404).json({ message: 'Không tìm thấy lịch hẹn.' });
 
-        if (!appointment) {
-            return res.status(404).json({ message: 'Không tìm thấy lịch hẹn.' });
-        }
-        if (['Completed', 'Cancelled'].includes(appointment.status)) {
-            return res.status(400).json({ message: 'Không thể hủy lịch hẹn này.' });
-        }
+        // Không cho hủy trong vòng 2 giờ trước giờ khám
+        const CANCEL_HOURS = Number(process.env.CANCEL_HOURS_BEFORE) || 2;
+        const aptTime = dayjs(`${apt.date} ${apt.time}`, 'YYYY-MM-DD HH:mm');
+        if (aptTime.diff(dayjs(), 'hour') < CANCEL_HOURS)
+            return res.status(400).json({
+                message: `Không thể hủy trong vòng ${CANCEL_HOURS} tiếng trước giờ khám.`,
+            });
 
-        appointment.status = 'Cancelled';
-        await appointment.save();
-        res.status(200).json({ message: 'Hủy lịch hẹn thành công.' });
+        apt.status = 'Cancelled';
+        apt.cancelReason = req.body.note || '';
+        await apt.save();
+
+        res.status(200).json({ message: 'Đã hủy lịch hẹn.', appointment: apt });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-// [Admin/Staff] Tất cả lịch hẹn
-module.exports.getAll = async (req, res) => {
-    try {
-        const { date, status, page = 1, limit = 20 } = req.query;
-        const filter = {};
-        if (date) filter.date = date;
-        if (status) filter.status = status;
-
-        const total = await Appointment.countDocuments(filter);
-        const appointments = await Appointment.find(filter)
-            .populate('customer', 'fullName email phoneNumber')
-            .populate({ path: 'doctor', populate: { path: 'user', select: 'fullName' } })
-            .populate('service', 'name price duration icon')
-            .sort({ date: -1, time: -1 })
-            .skip((page - 1) * limit)
-            .limit(Number(limit));
-
-        res.status(200).json({ appointments, total, page: Number(page) });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-// [Admin/Staff/Doctor] Cập nhật trạng thái
-module.exports.updateStatus = async (req, res) => {
-    try {
-        const { status, adminNote } = req.body;
-        const appointment = await Appointment.findByIdAndUpdate(
-            req.params.id,
-            { status, ...(adminNote && { adminNote }) },
-            { returnDocument: 'after' }
-        );
-
-        if (!appointment) {
-            return res.status(404).json({ message: 'Không tìm thấy lịch hẹn.' });
-        }
-
-        res.status(200).json({ message: 'Cập nhật thành công!', appointment });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-// [Public] Lấy danh sách bác sĩ
+// ── GET /api/appointments/doctors (legacy - giữ lại) ──────────────
 module.exports.getDoctors = async (req, res) => {
     try {
-        const doctors = await Doctor.find({ isActive: true })
-            .populate('user', 'fullName email phoneNumber');
-        res.status(200).json(doctors);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-// [Public] Lấy slot còn trống của bác sĩ theo ngày
-module.exports.getAvailableSlots = async (req, res) => {
-    try {
-        const { doctorId, date } = req.query;
-        if (!doctorId || !date) {
-            return res.status(400).json({ message: 'Thiếu doctorId hoặc date.' });
-        }
-
-        // Lấy lịch đã đặt của bác sĩ trong ngày đó
-        const booked = await Appointment.find({
-            doctor: doctorId,
-            date,
-            status: { $in: ['Pending', 'Confirmed'] }
-        }).select('time');
-
-        const bookedTimes = booked.map(a => a.time);
-
-        // Tất cả slot trong ngày (theo thứ trong tuần)
-        const doctor = await Doctor.findById(doctorId);
-        if (!doctor) return res.status(404).json({ message: 'Không tìm thấy bác sĩ.' });
-
-        const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
-        const dayName  = dayNames[new Date(date).getDay()];
-        const allSlots = doctor.workSchedule[dayName] || [];
-
-        const availableSlots = allSlots.filter(slot => !bookedTimes.includes(slot));
-
-        res.status(200).json({ allSlots, availableSlots, bookedTimes });
+        const doctors = await Doctor.find()
+            .populate('user', 'fullName email avatar');
+        res.status(200).json({ doctors });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

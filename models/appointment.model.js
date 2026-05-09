@@ -1,48 +1,44 @@
 const mongoose = require('mongoose');
 
 const appointmentSchema = new mongoose.Schema({
-    // Người đặt
-    customer: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'users',
-        required: true
-    },
+    customer:  { type: mongoose.Schema.Types.ObjectId, ref: 'users',    required: true },
+    doctor:    { type: mongoose.Schema.Types.ObjectId, ref: 'doctors',  required: true },
+    service:   { type: mongoose.Schema.Types.ObjectId, ref: 'services', required: true },
 
-    // Bác sĩ & Dịch vụ
-    doctor: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'doctors',
-        required: true
-    },
-    service: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'services',
-        required: true
-    },
+    date:      { type: String, required: true },
+    time:      { type: String, required: true },
 
-    //Thời gian
-    date: { type: String, required: true },  // "2025-03-15"
-    time: { type: String, required: true },  // "09:00"
+    petName:   { type: String, required: true },
+    petType:   { type: String, default: 'Chó' },
+    petAge:    { type: String, default: '' },
+    petWeight: { type: String, default: '' },
+    note:      { type: String, default: '' },
 
-    //Thông tin thú cưng
-    petName:    { type: String, required: true },
-    petType:    { type: String, enum: ['Chó', 'Mèo', 'Khác'], default: 'Chó' },
-    petAge:     { type: String, default: '' },  // "2 tuổi"
-    petWeight:  { type: String, default: '' },  // "5kg"
-
-    // Ghi chú
-    note: { type: String, default: '' },
-
-    // Trạng thái
+    // ── Trạng thái lịch hẹn ──────────────────────────────────────
+    // Flow mới: Pending → Confirmed → CheckedIn → InProgress → Completed / Cancelled
     status: {
-        type: String,
-        enum: ['Pending', 'Confirmed', 'Completed', 'Cancelled'],
-        default: 'Pending'
+        type:    String,
+        enum:    ['Pending', 'Confirmed', 'CheckedIn', 'InProgress', 'Completed', 'Cancelled'],
+        default: 'Pending',
     },
 
-    // Admin ghi chú 
-    adminNote: { type: String, default: '' },
+    // ── Check-in ─────────────────────────────────────────────────
+    checkedInAt:  { type: Date,   default: null },   // Thời điểm khách hàng bấm xác nhận đã đến
+    checkedInBy:  { type: String, default: 'customer' }, // 'customer' | 'staff'
+
+    // ── Thông tin bổ sung ─────────────────────────────────────────
+    adminNote:    { type: String, default: '' },
+    cancelReason: { type: String, default: '' },
+
+    // ── Thanh toán VNPay ─────────────────────────────────────────
+    paymentStatus: {
+        type:    String,
+        enum:    ['unpaid', 'pending', 'paid', 'failed', 'refunded'],
+        default: 'unpaid',
+    },
+    depositAmount: { type: Number, default: 0 },
+    vnpTxnRef:     { type: String, default: '' },
 
 }, { timestamps: true });
 
-module.exports = mongoose.model('appointments', appointmentSchema);
+module.exports = mongoose.model('Appointment', appointmentSchema);

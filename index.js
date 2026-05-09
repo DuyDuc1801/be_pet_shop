@@ -5,6 +5,8 @@ require('./models/cart.model');
 require('./models/appointment.model');
 require('./models/service.model');
 require('./models/doctor.model'); 
+require('./models/leaveRequest.model');
+require('./models/stockImport.model');
 const express = require('express');
 const cors = require('cors');
 const database = require("./configs/database");

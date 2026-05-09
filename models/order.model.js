@@ -24,7 +24,7 @@ const orderSchema = new mongoose.Schema({
     // Thanh toán
     paymentMethod: {
         type: String,
-        enum: ['cod', 'bank_transfer'],
+        enum: ['cod', 'bank_transfer', 'vnpay'],
         default: 'cod',
     },
     paymentStatus: {

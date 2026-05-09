@@ -3,6 +3,7 @@ const Appointment = require('../models/appointment.model');
 const Order       = require('../models/order.model');
 const Doctor      = require('../models/doctor.model');
 const Product     = require('../models/product.model');
+const mongoose = require('mongoose');
 
 // ── Tạo review bác sĩ sau khi khám xong ─────────────────────────
 // POST /api/reviews/doctor
@@ -83,8 +84,10 @@ module.exports.createProductReview = async (req, res) => {
 
         res.status(201).json({ message: 'Cảm ơn đánh giá của bạn!', review });
     } catch (error) {
-        if (error.code === 11000)
+        console.log('Lỗi tạo review: ', error);
+        if (error.code === 11000){
             return res.status(400).json({ message: 'Bạn đã đánh giá sản phẩm này rồi.' });
+        }
         res.status(500).json({ error: error.message });
     }
 };
@@ -162,14 +165,20 @@ async function updateDoctorRating(doctorId) {
 }
 
 async function updateProductRating(productId) {
-    const stats = await Review.aggregate([
-        { $match: { type: 'product', product: new require('mongoose').Types.ObjectId(productId) } },
-        { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
-    ]);
-    if (stats.length > 0) {
-        await Product.findByIdAndUpdate(productId, {
-            rating:      Math.round(stats[0].avg * 10) / 10,
-            reviewCount: stats[0].count,
-        });
+    try {
+        const stats = await Review.aggregate([
+            // Chuyển string thành ObjectId chuẩn xác
+            { $match: { type: 'product', product: new mongoose.Types.ObjectId(productId) } },
+            { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
+        ]);
+        
+        if (stats.length > 0) {
+            await Product.findByIdAndUpdate(productId, {
+                rating: Math.round(stats[0].avg * 10) / 10,
+                reviewCount: stats[0].count,
+            });
+        }
+    } catch (err) {
+        console.error("Lỗi khi update rating sản phẩm:", err);
     }
 }

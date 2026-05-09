@@ -7,7 +7,7 @@ const doctorSchema = new mongoose.Schema({
     bio: { type: String, default: '' },
     photo: { type: String, default: '' },
     // Danh sách dịch vụ bác sĩ này thực hiện được
-    services:    [{ type: mongoose.Schema.Types.ObjectId, ref: 'services' }],  // ← THÊM
+    services:    [{ type: mongoose.Schema.Types.ObjectId, ref: 'services' }], 
     workSchedule: {
         monday: { type: [String], default: [] },
         tuesday: { type: [String], default: [] },

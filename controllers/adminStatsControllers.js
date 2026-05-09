@@ -1,163 +1,197 @@
 const Order       = require('../models/order.model');
 const Appointment = require('../models/appointment.model');
-const User        = require('../models/user.model');
 const Product     = require('../models/product.model');
+const User        = require('../models/user.model');
+const StockImport = require('../models/stockImport.model');
 const dayjs       = require('dayjs');
 
-// ── GET /api/admin/stats/overview ────────────────────────────────
+function getDateRange(month, year) {
+    const y = parseInt(year) || dayjs().year();
+    const m = parseInt(month);
+    if (m >= 1 && m <= 12) {
+        const start = dayjs(`${y}-${String(m).padStart(2,'0')}-01`).startOf('month').toDate();
+        const end   = dayjs(`${y}-${String(m).padStart(2,'0')}-01`).endOf('month').toDate();
+        return { start, end, label: `Tháng ${m}/${y}` };
+    }
+    return {
+        start: dayjs(`${y}-01-01`).startOf('year').toDate(),
+        end:   dayjs(`${y}-12-31`).endOf('year').toDate(),
+        label: `Năm ${y}`,
+    };
+}
+
+// GET /api/admin/stats/overview?month=3&year=2025
 module.exports.getOverview = async (req, res) => {
     try {
-        const today     = dayjs().format('YYYY-MM-DD');
-        const thisMonth = dayjs().format('YYYY-MM');
-        const lastMonth = dayjs().subtract(1, 'month').format('YYYY-MM');
+        const { month = 0, year = dayjs().year() } = req.query;
+        const { start, end, label } = getDateRange(month, year);
 
-        const thisMonthStart = `${thisMonth}-01`;
-        const thisMonthEnd   = dayjs(thisMonthStart).endOf('month').format('YYYY-MM-DD');
-        const lastMonthStart = `${lastMonth}-01`;
-        const lastMonthEnd   = dayjs(lastMonthStart).endOf('month').format('YYYY-MM-DD');
-
-        const [
-            // Tháng này
-            revenueThis, ordersThis, appointmentsThis, newUsersThis,
-            // Tháng trước (để tính % tăng trưởng)
-            revenueLast, ordersLast, appointmentsLast, newUsersLast,
-            // Hôm nay
-            todayOrders, todayAppointments,
-            // Tổng
-            totalUsers, totalProducts,
-        ] = await Promise.all([
-            // Revenue tháng này
+        const [revenueAgg, depositAgg, orderStats,
+               aptStats, importAgg, newUsers] = await Promise.all([
             Order.aggregate([
-                { $match: { status: 'delivered', createdAt: { $gte: new Date(thisMonthStart), $lte: new Date(thisMonthEnd + 'T23:59:59') } } },
-                { $group: { _id: null, total: { $sum: '$grandTotal' } } },
+                { $match: { status: 'delivered', createdAt: { $gte: start, $lte: end } } },
+                { $group: { _id: null, total: { $sum: '$grandTotal' }, count: { $sum: 1 } } },
             ]),
-            Order.countDocuments({ createdAt: { $gte: new Date(thisMonthStart) } }),
-            Appointment.countDocuments({ date: { $gte: thisMonthStart, $lte: thisMonthEnd } }),
-            User.countDocuments({ createdAt: { $gte: new Date(thisMonthStart) } }),
-
-            // Tháng trước
+            Appointment.aggregate([
+                { $match: { paymentStatus: 'paid', createdAt: { $gte: start, $lte: end } } },
+                { $group: { _id: null, total: { $sum: '$depositAmount' }, count: { $sum: 1 } } },
+            ]),
             Order.aggregate([
-                { $match: { status: 'delivered', createdAt: { $gte: new Date(lastMonthStart), $lte: new Date(lastMonthEnd + 'T23:59:59') } } },
-                { $group: { _id: null, total: { $sum: '$grandTotal' } } },
+                { $match: { createdAt: { $gte: start, $lte: end } } },
+                { $group: { _id: '$status', count: { $sum: 1 } } },
             ]),
-            Order.countDocuments({ createdAt: { $gte: new Date(lastMonthStart), $lte: new Date(lastMonthEnd + 'T23:59:59') } }),
-            Appointment.countDocuments({ date: { $gte: lastMonthStart, $lte: lastMonthEnd } }),
-            User.countDocuments({ createdAt: { $gte: new Date(lastMonthStart), $lte: new Date(lastMonthEnd + 'T23:59:59') } }),
-
-            // Hôm nay
-            Order.countDocuments({ createdAt: { $gte: new Date(today) } }),
-            Appointment.countDocuments({ date: today, status: { $nin: ['Cancelled'] } }),
-
-            // Tổng
-            User.countDocuments(),
-            Product.countDocuments({ isActive: true }),
+            Appointment.aggregate([
+                { $match: { createdAt: { $gte: start, $lte: end } } },
+                { $group: { _id: '$status', count: { $sum: 1 } } },
+            ]),
+            StockImport.aggregate([
+                { $match: { createdAt: { $gte: start, $lte: end } } },
+                { $group: { _id: null,
+                    total: { $sum: '$totalAmount' },
+                    paid:  { $sum: '$paidAmount'  },
+                    count: { $sum: 1 } } },
+            ]),
+            User.countDocuments({ createdAt: { $gte: start, $lte: end } }),
         ]);
 
-        const calcGrowth = (curr, prev) => {
-            if (!prev) return curr > 0 ? 100 : 0;
-            return Math.round(((curr - prev) / prev) * 100);
-        };
+        const orderRev   = revenueAgg[0]?.total || 0;
+        const depositRev = depositAgg[0]?.total || 0;
+        const totalRev   = orderRev + depositRev;
+        const importPaid = importAgg[0]?.paid  || 0;
 
-        const revenueThisVal = revenueThis[0]?.total || 0;
-        const revenueLastVal = revenueLast[0]?.total || 0;
+        const orderMap = {};
+        orderStats.forEach(o => { orderMap[o._id] = o.count; });
+        const aptMap = {};
+        aptStats.forEach(a => { aptMap[a._id] = a.count; });
 
         res.status(200).json({
-            thisMonth: {
-                revenue:      revenueThisVal,
-                orders:       ordersThis,
-                appointments: appointmentsThis,
-                newUsers:     newUsersThis,
+            period: { month: parseInt(month), year: parseInt(year), label },
+            revenue: {
+                total:        totalRev,
+                fromOrders:   orderRev,
+                fromDeposits: depositRev,
+                importCost:   importPaid,
+                grossProfit:  totalRev - importPaid,
             },
-            growth: {
-                revenue:      calcGrowth(revenueThisVal, revenueLastVal),
-                orders:       calcGrowth(ordersThis, ordersLast),
-                appointments: calcGrowth(appointmentsThis, appointmentsLast),
-                newUsers:     calcGrowth(newUsersThis, newUsersLast),
+            orders: {
+                total:     Object.values(orderMap).reduce((a,b)=>a+b,0),
+                pending:   orderMap['pending']   || 0,
+                confirmed: orderMap['confirmed'] || 0,
+                shipping:  orderMap['shipping']  || 0,
+                delivered: revenueAgg[0]?.count  || 0,
+                cancelled: orderMap['cancelled'] || 0,
             },
-            today: { orders: todayOrders, appointments: todayAppointments },
-            total: { users: totalUsers, products: totalProducts },
+            appointments: {
+                total:      Object.values(aptMap).reduce((a,b)=>a+b,0),
+                pending:    aptMap['Pending']    || 0,
+                confirmed:  aptMap['Confirmed']  || 0,
+                checkedIn:  aptMap['CheckedIn']  || 0,
+                inProgress: aptMap['InProgress'] || 0,
+                completed:  aptMap['Completed']  || 0,
+                cancelled:  aptMap['Cancelled']  || 0,
+            },
+            imports: {
+                count:       importAgg[0]?.count || 0,
+                totalAmount: importAgg[0]?.total || 0,
+                paidAmount:  importPaid,
+                debtAmount:  (importAgg[0]?.total||0) - importPaid,
+            },
+            newUsers,
         });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-// ── GET /api/admin/stats/revenue-chart?months=12 ─────────────────
+// GET /api/admin/stats/revenue-chart?month=0&year=2025
 module.exports.getRevenueChart = async (req, res) => {
     try {
-        const months = parseInt(req.query.months) || 12;
-        const data   = [];
+        const { month = 0, year = dayjs().year() } = req.query;
+        const y = parseInt(year);
+        const m = parseInt(month);
+        const byMonth = !m || m === 0;
+        const points  = byMonth ? 12 : dayjs(`${y}-${String(m).padStart(2,'0')}-01`).daysInMonth();
+        const chartData = [];
 
-        for (let i = months - 1; i >= 0; i--) {
-            const d     = dayjs().subtract(i, 'month');
-            const start = d.startOf('month').toDate();
-            const end   = d.endOf('month').toDate();
-            const label = d.format('MM/YYYY');
+        for (let i = 1; i <= points; i++) {
+            let start, end;
+            if (byMonth) {
+                start = dayjs(`${y}-${String(i).padStart(2,'0')}-01`).startOf('month').toDate();
+                end   = dayjs(`${y}-${String(i).padStart(2,'0')}-01`).endOf('month').toDate();
+            } else {
+                const ds = `${y}-${String(m).padStart(2,'0')}-${String(i).padStart(2,'0')}`;
+                start = dayjs(ds).startOf('day').toDate();
+                end   = dayjs(ds).endOf('day').toDate();
+            }
 
-            const [revenue, orders, appointments] = await Promise.all([
+            const [ordA, depA, impA] = await Promise.all([
                 Order.aggregate([
                     { $match: { status: 'delivered', createdAt: { $gte: start, $lte: end } } },
                     { $group: { _id: null, total: { $sum: '$grandTotal' } } },
                 ]),
-                Order.countDocuments({ createdAt: { $gte: start, $lte: end } }),
-                Appointment.countDocuments({
-                    date: { $gte: d.format('YYYY-MM-01'), $lte: d.endOf('month').format('YYYY-MM-DD') },
-                    status: { $nin: ['Cancelled'] },
-                }),
+                Appointment.aggregate([
+                    { $match: { paymentStatus: 'paid', createdAt: { $gte: start, $lte: end } } },
+                    { $group: { _id: null, total: { $sum: '$depositAmount' } } },
+                ]),
+                StockImport.aggregate([
+                    { $match: { createdAt: { $gte: start, $lte: end } } },
+                    { $group: { _id: null, total: { $sum: '$paidAmount' } } },
+                ]),
             ]);
 
-            data.push({
-                month:        label,
-                revenue:      revenue[0]?.total || 0,
-                orders,
-                appointments,
+            const orderRev   = ordA[0]?.total || 0;
+            const depositRev = depA[0]?.total || 0;
+            const importCost = impA[0]?.total || 0;
+            const revenue    = orderRev + depositRev;
+
+            chartData.push({
+                label:      byMonth ? `T${i}` : `${i}`,
+                revenue, orderRev, depositRev, importCost,
+                profit: revenue - importCost,
             });
         }
 
-        res.status(200).json({ data });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+        res.status(200).json({ chartData, byMonth });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-// ── GET /api/admin/stats/top-products ────────────────────────────
+// GET /api/admin/stats/top-products?month=3&year=2025&limit=8
 module.exports.getTopProducts = async (req, res) => {
     try {
-        const products = await Product.find({ isActive: true })
-            .sort({ sold: -1 }).limit(5)
-            .select('name images sold price salePrice category');
-        res.status(200).json({ products });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+        const { month = 0, year = dayjs().year(), limit = 8 } = req.query;
+        const { start, end } = getDateRange(month, year);
+        const topProducts = await Order.aggregate([
+            { $match: { status: 'delivered', createdAt: { $gte: start, $lte: end } } },
+            { $unwind: '$items' },
+            { $group: { _id: '$items.product',
+                name:     { $first: '$items.name'  },
+                image:    { $first: '$items.image' },
+                quantity: { $sum: '$items.quantity' },
+                revenue:  { $sum: { $multiply: ['$items.price','$items.quantity'] } },
+            }},
+            { $sort: { revenue: -1 } },
+            { $limit: parseInt(limit) },
+        ]);
+        res.status(200).json({ topProducts });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-// ── GET /api/admin/stats/category-revenue ────────────────────────
+// GET /api/admin/stats/category-revenue?month=3&year=2025
 module.exports.getCategoryRevenue = async (req, res) => {
     try {
+        const { month = 0, year = dayjs().year() } = req.query;
+        const { start, end } = getDateRange(month, year);
         const data = await Order.aggregate([
-            { $match: { status: 'delivered' } },
+            { $match: { status: 'delivered', createdAt: { $gte: start, $lte: end } } },
             { $unwind: '$items' },
-            {
-                $lookup: {
-                    from:         'products',
-                    localField:   'items.product',
-                    foreignField: '_id',
-                    as:           'productInfo',
-                }
-            },
-            { $unwind: '$productInfo' },
-            {
-                $group: {
-                    _id:     '$productInfo.category',
-                    revenue: { $sum: { $multiply: ['$items.price', '$items.quantity'] } },
-                    count:   { $sum: '$items.quantity' },
-                }
-            },
+            { $lookup: { from: 'products', localField: 'items.product',
+                foreignField: '_id', as: 'p' } },
+            { $unwind: { path: '$p', preserveNullAndEmptyArrays: true } },
+            { $group: {
+                _id:     { $ifNull: ['$p.category', 'Khác'] },
+                revenue: { $sum: { $multiply: ['$items.price','$items.quantity'] } },
+                count:   { $sum: '$items.quantity' },
+            }},
             { $sort: { revenue: -1 } },
         ]);
-        res.status(200).json({ data });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+        res.status(200).json({ categoryRevenue: data });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 };

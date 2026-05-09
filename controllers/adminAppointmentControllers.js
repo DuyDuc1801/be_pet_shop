@@ -18,6 +18,7 @@ module.exports.getAll = async (req, res) => {
             .skip((page - 1) * limit)
             .limit(Number(limit));
 
+
         res.status(200).json({ appointments, total, page: Number(page), totalPages: Math.ceil(total / limit) });
     } catch (error) {
         res.status(500).json({ error: error.message });
